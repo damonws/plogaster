@@ -295,12 +295,12 @@ def download_links(cfg, link_info, event_quit):
                         checksum_node.appendChild(
                                 cfg.createTextNode(file_checksum))
 
-                        # purge older checksums if history list is too long
-                        while len(history_node.childNodes) > max_history:
-                            logging.info('PURGE %s' % cfg_get_data(
-                                history_node, 'checksum'))
-                            history_node.removeChild(
-                                    history_node.firstChild).unlink()
+                    # purge older checksums if history list is too long
+                    while len(history_node.childNodes) > max_history:
+                        logging.info('PURGE %s' % cfg_get_data(
+                            history_node, 'checksum'))
+                        history_node.removeChild(
+                                history_node.firstChild).unlink()
 
                     # Write config to temp file, then commit change to original
                     with open(cfg_temp, 'w') as f:
@@ -352,7 +352,6 @@ def main():
     link_info = get_all_links_to_download(cfg, event_quit)
     if not event_quit.isSet():
         download_links(cfg, link_info, event_quit)
-    #print cfg.toxml()
 
 if __name__ == '__main__':
     main()
