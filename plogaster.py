@@ -71,12 +71,27 @@ def wait_for_threads(threads, event_quit):
         logging.info('aborting')
         event_quit.set()
 
-def get_feed_links_to_download(feed, update_after, dirs, default_dir):
-    link_info = []
+def get_feed_links_to_download(feed, update_after, dirs, default_dir, reverse):
+
+    link_info = []  # all links from the feed
+    link_group = [] # links with the same timestamp
+    prev_updated = None
+
     for entry in feed.entries:
+        # get and parse timestamp for this feed entry
         updated_parsed = time.strptime(time.strftime(tfmt,
                             entry.updated_parsed), tfmt)
+
+        # bail out as soon as we hit an entry that isn't newer than our most
+        # recent update
         if updated_parsed > update_after:
+
+            # make sure the link is an MP3
+            mp3_link = get_mp3_link(entry.links)
+            if not mp3_link:
+                continue
+
+            # check for custom output directory
             outdir = None
             for d in dirs:
                 if re.search(d.getAttribute('match'), entry.title):
@@ -84,14 +99,32 @@ def get_feed_links_to_download(feed, update_after, dirs, default_dir):
                     break
             if not outdir:
                 outdir = default_dir
-            mp3_link = get_mp3_link(entry.links)
-            if mp3_link:
-                link_info.append((updated_parsed,
-                                  entry.title,
-                                  get_mp3_link(entry.links),
-                                  outdir))
+
+            # if the update timestamp is not in the current group, flush the
+            # link group
+            if updated_parsed != prev_updated:
+                if reverse:
+                    link_group.reverse()
+                link_info.extend(link_group)
+                link_group = []
+                prev_updated = updated_parsed
+
+            # add this link to the temporary link group
+            link_group.append((updated_parsed,
+                               entry.title,
+                               mp3_link,
+                               outdir))
+
         else:
             break
+
+    # flush any remaining link group
+    if link_group:
+        if reverse:
+            link_group.reverse()
+        link_info.extend(link_group)
+
+    # reverse list of links so they are numbered from oldest to newest
     link_info.reverse()
     return link_info
 
@@ -124,6 +157,7 @@ def get_all_links_to_download(cfg, event_quit):
         with cfg_lock:
             url = cfg_get_data(cast, 'url')
             name = cfg_get_data(cast, 'name')
+            reverse = len(cast.getElementsByTagName('reverse_order')) > 0
 
         try:
             logging.debug('%-8s getting links' % nick)
@@ -140,7 +174,7 @@ def get_all_links_to_download(cfg, event_quit):
 
                 # get new links in feed
                 links = get_feed_links_to_download(feed, update_after,
-                        cast.getElementsByTagName('dir'), default_dir)
+                        cast.getElementsByTagName('dir'), default_dir, reverse)
 
                 if len(links) > 0:
                     link_info.append((links, name, nick,
