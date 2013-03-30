@@ -2,6 +2,7 @@
 #
 import errno
 import feedparser
+import hashlib
 import itertools
 import logging
 import optparse
@@ -36,6 +37,10 @@ def mkdir_p(path):
         else:
             raise
 
+def hashfile(filename):
+    with open(filename, 'rb') as f:
+        return hashlib.sha1(f.read()).hexdigest()
+
 def get_mp3_link(links):
     for l in links:
         url = l.get('href')
@@ -45,7 +50,7 @@ def get_mp3_link(links):
     return None
 
 def cfg_get_node(node, tag):
-    return node.getElementsByTagName(tag)[0].childNodes[0]
+    return node.getElementsByTagName(tag)[0].firstChild
 
 def cfg_get_data(node, tag):
     return cfg_get_node(node, tag).data
@@ -75,7 +80,7 @@ def get_feed_links_to_download(feed, update_after, dirs, default_dir):
             outdir = None
             for d in dirs:
                 if re.search(d.getAttribute('match'), entry.title):
-                    outdir = d.childNodes[0].data
+                    outdir = d.firstChild.data
                     break
             if not outdir:
                 outdir = default_dir
@@ -123,19 +128,23 @@ def get_all_links_to_download(cfg, event_quit):
         try:
             logging.debug('%-8s getting links' % nick)
 
+            # get feed XML and parse it
             feed_xml = nick + '.xml'
             urllib.urlretrieve(url, feed_xml, url_progress)
             feed = feedparser.parse(feed_xml)
 
             with cfg_lock:
+                # determine time of last successful download from feed
                 update_after_node = cfg_get_node(cast, 'update_after')
                 update_after = time.strptime(update_after_node.data, tfmt)
 
+                # get new links in feed
                 links = get_feed_links_to_download(feed, update_after,
                         cast.getElementsByTagName('dir'), default_dir)
 
                 if len(links) > 0:
-                    link_info.append((links, name, nick, update_after_node))
+                    link_info.append((links, name, nick,
+                                      update_after_node, cast))
 
             logging.info('%-8s got %d links' % (nick, len(links)))
 
@@ -173,22 +182,20 @@ def download_links(cfg, link_info, event_quit):
 
     base_dir = cfg_get_data(cfg, 'base_dir')
 
+    # default maximum number of checksums to keep
+    max_history = 25
+    max_history_nodes = cfg.getElementsByTagName('max_history')
+    if max_history_nodes:
+        max_history_text = max_history_nodes[0].firstChild
+        if max_history_text:
+            max_history = int(max_history_text.data)
+
     event_done = threading.Event()
     console_lock = threading.RLock()
     progress_data = {}
 
     def progress_thread():
         while True:
-            # multi-line output
-            # for nick, data in progress_data.iteritems():
-            #     print '%s %d/%d' % (nick, data['link'], data['links']),
-            #     if data['done']:
-            #         print 'DONE'
-            #     else:
-            #         if data['total'] != -1:
-            #             print '%3d%%' % (100 * data['data'] / data['total']),
-            #         print '%d KB' % (data['data'] / 1024)
-
             # single-line output
             msg = ' '.join('%d/%d:%s' % (d['link'], d['links'],
                 '?' if d['total'] in (0,-1) else
@@ -203,7 +210,8 @@ def download_links(cfg, link_info, event_quit):
                 break
 
     def worker(cast):
-        links, name, nick, update_after_node = cast
+        links, name, nick, update_after_node, cast_node = cast
+        dups = 0
 
         try:
             for i, link in enumerate(links):
@@ -220,15 +228,22 @@ def download_links(cfg, link_info, event_quit):
                             'done'  : False,
                             }
 
+                # get feed timestamp for this link
                 update_after = time.strftime(tfmt, link[0])
+
+                # create a unique filename for the file to download
                 safe_title = '%05d_%s_%s.mp3' % (next_counter(cfg), nick,
                                                  safe_name(link[1]))
-                url = link[2]
                 outdir = os.path.join(base_dir, link[3])
                 outfile = os.path.join(outdir, safe_title)
                 mkdir_p(outdir)
+
+                # download the file
+                url = link[2]
                 logging.debug('GET %s' % url)
                 urllib.urlretrieve(url, outfile, url_progress)
+
+                # handle zero-length files
                 if os.path.getsize(outfile) == 0:
                     # try again on zero-size file
                     logging.warning('0 KB file, retrying download')
@@ -238,16 +253,65 @@ def download_links(cfg, link_info, event_quit):
                         logging.error('download failed')
                         i -= 1
                         break
+
+                # set filesystem timestamp on downloaded file
                 timestamp = time.mktime(link[0])
                 os.utime(outfile, (timestamp, timestamp))
+
+                # determine checksum of downloaded file
+                file_checksum = hashfile(outfile)
+
+                # update config data for this feed
                 with cfg_lock:
+
+                    # set time of last successful download
                     update_after_node.data = update_after
+
+                    # get checksums of previous downloads
+                    history_nodes = cast_node.getElementsByTagName('history')
+                    if history_nodes:
+                        history_node = history_nodes[0]
+                    else:
+                        history_node = cast_node.appendChild(
+                                cfg.createElement('history'))
+                    checksums = history_node.getElementsByTagName('checksum')
+
+                    # remove the downloaded file if it's a duplicate, otherwise
+                    # record the checksum of the new file
+                    for checksum in checksums:
+                        if checksum.firstChild.data == file_checksum:
+                            # duplicate
+                            logging.info('DUP %s %s' % (file_checksum, link[1]))
+                            os.unlink(outfile)
+                            dups += 1
+                            break
+                    else:
+                        # new file
+                        logging.info('GOT %s %s' % (file_checksum, link[1]))
+
+                        # add its checksum to the history
+                        checksum_node = history_node.appendChild(
+                                cfg.createElement('checksum'))
+                        checksum_node.appendChild(
+                                cfg.createTextNode(file_checksum))
+
+                        # purge older checksums if history list is too long
+                        while len(history_node.childNodes) > max_history:
+                            logging.info('PURGE %s' % cfg_get_data(
+                                history_node, 'checksum'))
+                            history_node.removeChild(
+                                    history_node.firstChild).unlink()
+
+                    # Write config to temp file, then commit change to original
                     with open(cfg_temp, 'w') as f:
                         f.write(cfg.toxml())
                     os.rename(cfg_temp, cfg_file)
-                logging.info('GOT %s' % link[1])
+
+            # update progress meter
             progress_data[nick]['done'] = True
-            msg = '%s got %d' % (nick, i + 1)
+            msg = '%s got %d' % (nick, i + 1 - dups)
+            if dups:
+                msg += ', %d dups' % dups
             with console_lock:
                 print (msg + 78 * ' ')[:78]
 
@@ -255,6 +319,8 @@ def download_links(cfg, link_info, event_quit):
             os.unlink(outfile)
             logging.info('aborted %s' % outfile)
 
+    # launch a worker thread for each feed that has updates and another thread
+    # to monitor progress
     threads = []
     for cast in link_info:
         t = threading.Thread(name=cast[2], target=worker, args=(cast,))
