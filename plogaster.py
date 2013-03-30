@@ -1,12 +1,5 @@
 #!/usr/bin/env python
 #
-# FUTURE
-#
-# - figure out hang downloading feed XML
-# - correctly handle files in feed with exact same time stamp
-#   (e.g., science friday)
-# - apply ID3 data (future)
-#
 import errno
 import feedparser
 import itertools
@@ -25,8 +18,8 @@ logging.basicConfig(level=logging.WARNING,
 
 tfmt = '%Y-%m-%dT%H:%M:%S'
 
-cfg_file = '/home/damon/Documents/code/podcast/getmycasts/casts.xml'
-cfg_temp = '/home/damon/Documents/code/podcast/getmycasts/casts.tmp'
+cfg_file = '/home/damon/Documents/code/podcast/plogaster/config.xml'
+cfg_temp = '/home/damon/Documents/code/podcast/plogaster/config.tmp'
 cfg_lock = threading.RLock()
 
 class ExceptionKillThread(StandardError):
