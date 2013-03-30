@@ -4,6 +4,7 @@ import errno
 import feedparser
 import itertools
 import logging
+import optparse
 import os
 import re
 import string
@@ -18,8 +19,9 @@ logging.basicConfig(level=logging.WARNING,
 
 tfmt = '%Y-%m-%dT%H:%M:%S'
 
-cfg_file = '/home/damon/Documents/code/podcast/plogaster/config.xml'
-cfg_temp = '/home/damon/Documents/code/podcast/plogaster/config.tmp'
+cfg_base = os.path.join(os.path.expanduser('~'), '.plogaster')
+cfg_file = cfg_base + '.xml' # default, could be changed by --config option
+cfg_temp = cfg_base + '.tmp'
 cfg_lock = threading.RLock()
 
 class ExceptionKillThread(StandardError):
@@ -265,7 +267,21 @@ def download_links(cfg, link_info, event_quit):
     event_done.set()
 
 def main():
-    cfg = xml.dom.minidom.parse(cfg_file)
+
+    # process command line
+    parser = optparse.OptionParser()
+    parser.add_option("-c", "--config")
+    options, args = parser.parse_args()
+
+    # parse config XML
+    global cfg_file
+    if options.config:
+        cfg_file = options.config
+    try:
+        cfg = xml.dom.minidom.parse(cfg_file)
+    except IOError, e:
+        parser.error('Could not open configuration file: %s' % cfg_file)
+
     event_quit = threading.Event()
     link_info = get_all_links_to_download(cfg, event_quit)
     if not event_quit.isSet():
